@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ws.addObserver(self, selector: #selector(workspaceChanged), name: name, object: nil)
         }
 
+        HotkeyMonitor.shared.start()
         model.refresh()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.model.refresh()

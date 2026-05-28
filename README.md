@@ -26,6 +26,8 @@ bar until permission is granted (clicking it deeplinks to the right pane).
   1s plus on `NSWorkspace` launch/terminate/activate notifications.
 - Clicking a tile activates the owning app, unminimizes the window,
   and `AXRaise`s it (matched by title).
+- Right-clicking a tile opens window controls: bring to front,
+  minimize/restore, close window, and quit app.
 - Start button opens an app-grid popover scanned from `/Applications`,
   `/System/Applications`, `/System/Applications/Utilities`, and
   `~/Applications`, with a fuzzy-search field.
@@ -35,7 +37,6 @@ bar until permission is granted (clicking it deeplinks to the right pane).
 ## Not yet (per task spec v2)
 
 - Window thumbnails (ScreenCaptureKit).
-- Right-click → close/minimize/quit.
 - Multi-display.
 - Recently-used app row.
 - Reserving screen space (currently overlaps the bottom ~56pt).

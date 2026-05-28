@@ -23,6 +23,7 @@ struct TaskbarView: View {
                 }
                 Spacer(minLength: 0)
                 AgentStrip(agents: model.agents)
+                CPUWidget(model: model)
                 ClockView()
                     .padding(.trailing, 12)
             }
@@ -58,24 +59,24 @@ private struct WindowTile: View {
 
     var body: some View {
         Button {
-            AXBridge.raise(pid: entry.pid, window: entry.axElement)
+            bringForward()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 if let icon = icon {
                     Image(nsImage: icon)
-                        .resizable().scaledToFit().frame(width: 24, height: 24)
+                        .resizable().scaledToFit().frame(width: 32, height: 32)
                         .opacity(entry.minimized ? 0.55 : 1.0)
                 }
-                Text(entry.title.isEmpty ? entry.appName : entry.title)
+                Text(displayLabel(entry))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundColor(entry.minimized ? Color.white.opacity(0.65) : .white)
                     .italic(entry.minimized)
-                    .frame(maxWidth: 160, alignment: .leading)
+                    .frame(width: 110, alignment: .leading)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.white.opacity(hover ? 0.18 : (entry.minimized ? 0.04 : 0.08)))
@@ -84,6 +85,54 @@ private struct WindowTile: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help("\(entry.appName) — \(entry.title)")
+        .contextMenu {
+            Button {
+                bringForward()
+            } label: {
+                Label("Bring to Front", systemImage: "arrow.up.forward.app")
+            }
+
+            Button {
+                AXBridge.setMinimized(
+                    pid: entry.pid,
+                    window: entry.axElement,
+                    title: entry.title,
+                    minimized: !entry.minimized
+                )
+            } label: {
+                Label(entry.minimized ? "Restore" : "Minimize", systemImage: entry.minimized ? "rectangle" : "minus")
+            }
+            .disabled(!canControlWindow)
+
+            Button(role: .destructive) {
+                AXBridge.close(pid: entry.pid, window: entry.axElement, title: entry.title)
+            } label: {
+                Label("Close Window", systemImage: "xmark.circle")
+            }
+            .disabled(!canControlWindow)
+
+            Divider()
+
+            Button {
+                AXBridge.quit(pid: entry.pid)
+            } label: {
+                Label("Quit \(entry.appName)", systemImage: "power")
+            }
+        }
+    }
+
+    private var canControlWindow: Bool {
+        entry.axElement != nil || entry.id.hasPrefix("cg:")
+    }
+
+    private func bringForward() {
+        if let win = entry.axElement {
+            AXBridge.raise(pid: entry.pid, window: win)
+        } else if entry.id.hasPrefix("cg:") {
+            AXBridge.raiseByTitle(pid: entry.pid, title: entry.title)
+        } else {
+            AXBridge.activate(pid: entry.pid)
+        }
     }
 }
 
@@ -122,10 +171,7 @@ private struct AgentIcon: View {
     @State private var hover = false
     var body: some View {
         Button {
-            if let app = NSRunningApplication(processIdentifier: agent.id) {
-                if #available(macOS 14.0, *) { app.activate() }
-                else { app.activate(options: [.activateIgnoringOtherApps]) }
-            }
+            openAgent(agent)
         } label: {
             Group {
                 if let icon = agent.icon {
@@ -134,17 +180,47 @@ private struct AgentIcon: View {
                     Image(systemName: "app.dashed").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
                 }
             }
-            .frame(width: 20, height: 20)
+            .frame(width: 26, height: 26)
             .padding(4)
             .background(
-                RoundedRectangle(cornerRadius: 5)
+                RoundedRectangle(cornerRadius: 6)
                     .fill(Color.white.opacity(hover ? 0.18 : 0.0))
             )
         }
         .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(agent.name)
+        .onHover { h in
+            hover = h
+            if h {
+                TooltipController.shared.show(text: agent.name, near: NSEvent.mouseLocation)
+            } else {
+                TooltipController.shared.hide()
+            }
+        }
     }
+}
+
+private func openAgent(_ agent: AgentApp) {
+    // 1) If the agent already has any AX window, raise it (covers e.g. apps
+    //    whose "main UI" window is already open behind everything).
+    let appElem = AXUIElementCreateApplication(agent.id)
+    var winsVal: CFTypeRef?
+    if AXUIElementCopyAttributeValue(appElem, kAXWindowsAttribute as CFString, &winsVal) == .success,
+       let windows = winsVal as? [AXUIElement], let first = windows.first {
+        AXBridge.raise(pid: agent.id, window: first)
+        return
+    }
+    // 2) Otherwise re-open the app's bundle, which triggers most menu-bar apps
+    //    to surface their preferences / popover / main window — the same effect
+    //    you'd get by relaunching them from Spotlight while already running.
+    if let app = NSRunningApplication(processIdentifier: agent.id),
+       let url = app.bundleURL {
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg, completionHandler: nil)
+        return
+    }
+    // 3) Last-resort fallback: just activate the process.
+    AXBridge.activate(pid: agent.id)
 }
 
 private struct ClockView: View {
@@ -155,6 +231,48 @@ private struct ClockView: View {
             .font(.system(size: 13, weight: .medium, design: .rounded))
             .foregroundColor(.white)
             .onReceive(timer) { now = $0 }
+    }
+}
+
+private func displayLabel(_ entry: WindowEntry) -> String {
+    let raw = entry.title.isEmpty ? entry.appName : entry.title
+    return TitleCleaner.clean(raw, appName: entry.appName)
+}
+
+enum TitleCleaner {
+    private static let emDashSep = " — "
+    private static let hyphenSep = " - "
+    private static let sizeRegex = try! NSRegularExpression(
+        pattern: #"^\d+\s*[×xX]\s*\d+$"#
+    )
+
+    static func clean(_ title: String, appName: String) -> String {
+        let isTerminalish = ["Terminal", "iTerm", "iTerm2", "Alacritty", "Kitty", "WezTerm", "Ghostty"]
+            .contains(appName)
+        guard isTerminalish else { return title }
+
+        let username = NSUserName()
+        for sep in [emDashSep, hyphenSep] {
+            if !title.contains(sep) { continue }
+            var parts = title.components(separatedBy: sep)
+
+            // Drop leading "user" / "user@host" segments.
+            while let first = parts.first,
+                  first == username || first.hasPrefix("\(username)@") {
+                parts.removeFirst()
+            }
+            // Drop trailing "WIDTHxHEIGHT" segments.
+            while let last = parts.last {
+                let range = NSRange(last.startIndex..<last.endIndex, in: last)
+                if sizeRegex.firstMatch(in: last, range: range) != nil {
+                    parts.removeLast()
+                } else { break }
+            }
+
+            let result = parts.joined(separator: sep).trimmingCharacters(in: .whitespaces)
+            return result.isEmpty ? title : result
+        }
+        return title
     }
 }
 

@@ -43,7 +43,15 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
+# Sign with a real identity so TCC (Accessibility, Screen Recording, …) keys
+# the grant on a stable designated requirement instead of an ad-hoc cdhash
+# that changes every rebuild. Override with SIGN_IDENTITY=... if needed.
+SIGN_IDENTITY="${SIGN_IDENTITY:-60F9A7B1897CBEE3F5CEC33F5A1CB964F1DC2BF6}"
+codesign --force --deep --options runtime \
+    --identifier "$BUNDLE_ID" \
+    --sign "$SIGN_IDENTITY" \
+    "$APP_DIR"
+codesign -dv --verbose=2 "$APP_DIR" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier)=' || true
 
 echo "Built: $APP_DIR"
 echo "Run:   open $APP_DIR"
