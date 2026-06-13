@@ -108,14 +108,13 @@ final class StartMenuController {
 
     private func handleNavKey(_ code: Int) {
         guard let model else { return }
-        let inCategories = model.focusedPane == .categories && !model.searching
         switch code {
-        case 125: inCategories ? model.moveCategory(1) : model.moveSelection(1)    // down
-        case 126: inCategories ? model.moveCategory(-1) : model.moveSelection(-1)  // up
+        case 125: model.navigateDown()                                             // down
+        case 126: model.navigateUp()                                               // up
         case 123: if !model.searching { model.focusedPane = .categories }          // left → category rail
         case 124: model.focusedPane = .apps                                        // right → apps
         case 36, 76:                                                               // return / enter
-            if inCategories { model.focusedPane = .apps }
+            if model.focusedPane == .categories { model.focusedPane = .apps }
             else if let app = model.selectedApp { launch(app) }
         case 53: hideAndRestore()                                                  // escape
         default: break
@@ -163,8 +162,10 @@ final class StartMenuController {
     }
 }
 
-/// Which pane keyboard navigation is currently driving.
-enum StartPane { case apps, categories }
+/// Which pane keyboard navigation is currently driving. The layout top-to-
+/// bottom is: category rail / app list, then the search field — so Down walks
+/// apps → search, and Up walks search → apps.
+enum StartPane { case apps, categories, search }
 
 @MainActor
 final class StartMenuModel: ObservableObject {
@@ -172,7 +173,7 @@ final class StartMenuModel: ObservableObject {
         didSet {
             selectionIndex = 0
             searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
-            focusedPane = .apps
+            if focusedPane == .categories { focusedPane = .apps }
         }
     }
     @Published var selectedCategory: AppCategory = .installed { didSet { selectionIndex = 0 } }
@@ -211,22 +212,47 @@ final class StartMenuModel: ObservableObject {
         return apps[selectionIndex]
     }
 
-    func moveSelection(_ delta: Int) {
-        let apps = currentApps
-        guard !apps.isEmpty else { return }
-        selectionIndex = max(0, min(apps.count - 1, selectionIndex + delta))
-    }
-
     /// Non-empty categories in display order — what arrow nav walks through.
     var visibleCategories: [AppCategory] {
         AppCategory.allCases.filter { !(byCategory[$0]?.isEmpty ?? true) }
     }
 
-    func moveCategory(_ delta: Int) {
-        let cats = visibleCategories
-        guard !cats.isEmpty else { return }
-        let idx = cats.firstIndex(of: selectedCategory) ?? 0
-        selectedCategory = cats[max(0, min(cats.count - 1, idx + delta))]
+    /// Down arrow: advance within the focused pane, falling through to the
+    /// search field once we reach the bottom of the app/category list.
+    func navigateDown() {
+        switch focusedPane {
+        case .categories:
+            let cats = visibleCategories
+            if let i = cats.firstIndex(of: selectedCategory), i < cats.count - 1 {
+                selectedCategory = cats[i + 1]
+            } else {
+                focusedPane = .search
+            }
+        case .apps:
+            if selectionIndex < currentApps.count - 1 {
+                selectionIndex += 1
+            } else {
+                focusedPane = .search
+            }
+        case .search:
+            break   // already at the bottom
+        }
+    }
+
+    /// Up arrow: reverse of navigateDown — from the search field back up into
+    /// the app list.
+    func navigateUp() {
+        switch focusedPane {
+        case .categories:
+            let cats = visibleCategories
+            if let i = cats.firstIndex(of: selectedCategory), i > 0 {
+                selectedCategory = cats[i - 1]
+            }
+        case .apps:
+            if selectionIndex > 0 { selectionIndex -= 1 }
+        case .search:
+            focusedPane = .apps
+        }
     }
 }
 
@@ -284,7 +310,9 @@ struct StartMenuView: View {
                     .onSubmit { if let app = model.selectedApp { onLaunch(app) } }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(Color.black.opacity(0.30))
+            .background(model.focusedPane == .search
+                        ? Color.accentColor.opacity(0.30)
+                        : Color.black.opacity(0.30))
         }
         .background(VisualEffectBackground())
         .clipShape(RoundedRectangle(cornerRadius: 8))
