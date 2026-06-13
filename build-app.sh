@@ -39,8 +39,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAccessibilityUsageDescription</key>
     <string>MacTaskbar needs Accessibility access to focus and raise windows when you click their tiles.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>MacTaskbar uses System Events to toggle the macOS Dock's auto-hide so it doesn't overlap the taskbar.</string>
 </dict>
 </plist>
 PLIST

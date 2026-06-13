@@ -62,22 +62,22 @@ private struct DockToggleButton: View {
         Button {
             dock.toggle()
         } label: {
-            Image(systemName: dock.autoHidden ? "rectangle.dashed" : "rectangle.bottomthird.inset.filled")
+            Image(systemName: dock.suppressed ? "rectangle" : "rectangle.bottomthird.inset.filled")
                 .resizable().scaledToFit()
                 .padding(11)
-                .foregroundColor(dock.autoHidden ? .white.opacity(0.6) : .white)
+                .foregroundColor(.white)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(dock.autoHidden
-                              ? Color.white.opacity(hover ? 0.18 : 0.08)
-                              : Color.accentColor.opacity(hover ? 0.95 : 0.85))
+                        .fill(dock.suppressed
+                              ? Color.accentColor.opacity(hover ? 0.95 : 0.85)  // lit = actively suppressing
+                              : Color.white.opacity(hover ? 0.18 : 0.08))
                 )
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(dock.autoHidden
-              ? "macOS Dock: auto-hidden — click to show"
-              : "macOS Dock: visible — click to auto-hide")
+        .help(dock.suppressed
+              ? "Dock suppressed (won't pop up) — click to allow it"
+              : "Dock can pop up from the bottom — click to suppress")
     }
 }
 
