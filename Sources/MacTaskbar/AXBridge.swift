@@ -14,12 +14,32 @@ enum AXBridge {
     /// Activate the app, then try to raise a specific window by title via AX.
     /// Used when we have no direct AXUIElement (CG-only entries).
     static func raiseByTitle(pid: pid_t, title: String) {
-        activate(pid: pid)
-        guard let window = findWindow(pid: pid, title: title) else { return }
-        raise(pid: pid, window: window)
+        // Prefer an exact title match so we raise the right window.
+        if let window = findWindow(pid: pid, title: title) {
+            raise(pid: pid, window: window)
+            return
+        }
+        // No exact match (title drift, or the app re-titles its windows): fall
+        // back to the app's first AX window if it exposes one, else just bring
+        // the app forward.
+        let appElem = AXUIElementCreateApplication(pid)
+        var winsVal: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElem, kAXWindowsAttribute as CFString, &winsVal) == .success,
+           let windows = winsVal as? [AXUIElement], let first = windows.first {
+            raise(pid: pid, window: first)
+        } else {
+            activate(pid: pid)
+        }
     }
 
     static func activate(pid: pid_t) {
+        // Setting the AX frontmost attribute is honored even when the caller is
+        // a background accessory agent, so it survives macOS 14's cooperative
+        // activation (where NSRunningApplication.activate() from a non-active
+        // app is frequently ignored). Do both — some apps respond to only one.
+        let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, true as CFTypeRef)
+
         guard let app = NSRunningApplication(processIdentifier: pid) else { return }
         if #available(macOS 14.0, *) {
             app.activate()
@@ -47,8 +67,18 @@ enum AXBridge {
         AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, true as CFTypeRef)
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
 
-        // 3) Now activate the app so it comes to the front.
+        // 3) Now bring the app to the front. activate() also sets AX frontmost,
+        //    which is the reliable path from a background accessory agent.
         activate(pid: pid)
+
+        // 4) Some apps reorder their windows when they become active, dropping
+        //    the window we just raised back down. Re-assert focus + raise on the
+        //    next runloop hop so the intended window stays on top.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            AXUIElementSetAttributeValue(appElem, kAXFocusedWindowAttribute as CFString, window)
+            AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, true as CFTypeRef)
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        }
     }
 
     @discardableResult

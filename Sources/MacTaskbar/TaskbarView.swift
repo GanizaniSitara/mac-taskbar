@@ -11,6 +11,8 @@ struct TaskbarView: View {
             HStack(spacing: 6) {
                 StartButton(isOpen: $startMenuOpen)
                     .frame(width: 48, height: 48)
+                DockToggleButton()
+                    .frame(width: 40, height: 48)
                 if !model.axTrusted {
                     AXWarningPill()
                 }
@@ -49,6 +51,33 @@ private struct StartButton: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct DockToggleButton: View {
+    @ObservedObject private var dock = DockController.shared
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            dock.toggle()
+        } label: {
+            Image(systemName: dock.autoHidden ? "rectangle.dashed" : "rectangle.bottomthird.inset.filled")
+                .resizable().scaledToFit()
+                .padding(11)
+                .foregroundColor(dock.autoHidden ? .white.opacity(0.6) : .white)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(dock.autoHidden
+                              ? Color.white.opacity(hover ? 0.18 : 0.08)
+                              : Color.accentColor.opacity(hover ? 0.95 : 0.85))
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(dock.autoHidden
+              ? "macOS Dock: auto-hidden — click to show"
+              : "macOS Dock: visible — click to auto-hide")
     }
 }
 

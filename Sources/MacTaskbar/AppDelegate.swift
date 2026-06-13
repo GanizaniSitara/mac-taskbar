@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: TaskbarPanel!
     private let model = TaskbarModel()
     private var refreshTimer: Timer?
+    private var tick = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AXBridge.ensurePermissionPrompt()
@@ -33,8 +34,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         HotkeyMonitor.shared.start()
         model.refresh()
+        // First Dock-state read, deferred off the initial render pass so the
+        // synchronous Apple Event doesn't reenter the SwiftUI update.
+        DispatchQueue.main.async { DockController.shared.refresh() }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.model.refresh()
+            guard let self else { return }
+            self.model.refresh()
+            // Re-read the macOS Dock auto-hide state every ~5s so the toggle
+            // reflects changes made elsewhere (e.g. System Settings).
+            self.tick &+= 1
+            if self.tick % 5 == 0 { DockController.shared.refresh() }
         }
     }
 
