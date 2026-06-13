@@ -15,12 +15,22 @@ struct AppEntry: Identifiable, Hashable {
     let category: AppCategory
 }
 
+/// Borderless panel that CAN become key, so the search field receives typing
+/// and the key monitor can drive arrow/enter/escape navigation. A plain
+/// borderless NSPanel never becomes key, which is why keys did nothing before.
+final class StartMenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 @MainActor
 final class StartMenuController {
     static let shared = StartMenuController()
     private var window: NSPanel?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var keyMonitor: Any?
+    private var model: StartMenuModel?
+    private var previousApp: NSRunningApplication?
 
     func toggle(relativeTo anchor: NSWindow?) {
         if let w = window, w.isVisible {
@@ -32,8 +42,31 @@ final class StartMenuController {
 
     func hide() {
         window?.orderOut(nil)
-        if let g = globalMonitor { NSEvent.removeMonitor(g); globalMonitor = nil }
-        if let l = localMonitor { NSEvent.removeMonitor(l); localMonitor = nil }
+        window = nil
+        model = nil
+        for m in [globalMonitor, localMonitor, keyMonitor] {
+            if let m { NSEvent.removeMonitor(m) }
+        }
+        globalMonitor = nil; localMonitor = nil; keyMonitor = nil
+    }
+
+    /// Dismiss and hand keyboard focus back to whatever app was frontmost when
+    /// the menu opened (used for Escape — a launch lets the new app take over).
+    private func hideAndRestore() {
+        let prev = previousApp
+        hide()
+        guard let prev, prev.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        if #available(macOS 14.0, *) {
+            prev.activate()
+        } else {
+            prev.activate(options: [.activateIgnoringOtherApps])
+        }
+    }
+
+    private func launch(_ app: AppEntry) {
+        AppUsageStore.shared.record(path: app.id)
+        NSWorkspace.shared.open(URL(fileURLWithPath: app.id))
+        hide()
     }
 
     private func installDismissMonitors() {
@@ -49,16 +82,44 @@ final class StartMenuController {
         }
     }
 
+    private func installKeyMonitor() {
+        // Consume navigation keys; let everything else (typing) reach the
+        // focused search field. Codes: 125 down, 126 up, 36/76 return, 53 esc.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard self != nil else { return event }
+            switch Int(event.keyCode) {
+            case 125, 126, 36, 76, 53:
+                let code = Int(event.keyCode)
+                Task { @MainActor in self?.handleNavKey(code) }
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func handleNavKey(_ code: Int) {
+        guard let model else { return }
+        switch code {
+        case 125: model.moveSelection(1)
+        case 126: model.moveSelection(-1)
+        case 36, 76: if let app = model.selectedApp { launch(app) }
+        case 53: hideAndRestore()
+        default: break
+        }
+    }
+
     private func show(anchor: NSWindow?) {
         let apps = AppScanner.scan()
         let model = StartMenuModel(apps: apps)
-        let view = StartMenuView(model: model) { [weak self] in
-            self?.hide()
+        self.model = model
+        let view = StartMenuView(model: model) { [weak self] app in
+            self?.launch(app)
         }
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 480)
 
-        let panel = NSPanel(
+        let panel = StartMenuPanel(
             contentRect: hosting.frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
@@ -77,21 +138,39 @@ final class StartMenuController {
             )
             panel.setFrameOrigin(origin)
         }
-        panel.orderFrontRegardless()
+
+        // Remember who had focus so Escape can return it, then become active so
+        // the panel can be key and actually receive keystrokes.
+        previousApp = NSWorkspace.shared.frontmostApplication
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
         self.window = panel
         installDismissMonitors()
+        installKeyMonitor()
     }
 }
 
 @MainActor
 final class StartMenuModel: ObservableObject {
-    @Published var query: String = ""
+    @Published var query: String = "" { didSet { selectionIndex = 0 } }
+    @Published var selectedCategory: AppCategory = .installed { didSet { selectionIndex = 0 } }
+    @Published var selectionIndex: Int = 0
+
     let allApps: [AppEntry]
     let byCategory: [AppCategory: [AppEntry]]
 
     init(apps: [AppEntry]) {
         self.allApps = apps
         self.byCategory = Dictionary(grouping: apps, by: { $0.category })
+        // Start on the first category that actually has apps.
+        if (byCategory[selectedCategory]?.isEmpty ?? true),
+           let firstNonEmpty = AppCategory.allCases.first(where: { !(byCategory[$0]?.isEmpty ?? true) }) {
+            selectedCategory = firstNonEmpty
+        }
+    }
+
+    var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var filtered: [AppEntry] {
@@ -99,16 +178,28 @@ final class StartMenuModel: ObservableObject {
         if q.isEmpty { return allApps }
         return allApps.filter { $0.name.lowercased().contains(q) }
     }
+
+    var currentApps: [AppEntry] {
+        isSearching ? filtered : (byCategory[selectedCategory] ?? [])
+    }
+
+    var selectedApp: AppEntry? {
+        let apps = currentApps
+        guard apps.indices.contains(selectionIndex) else { return nil }
+        return apps[selectionIndex]
+    }
+
+    func moveSelection(_ delta: Int) {
+        let apps = currentApps
+        guard !apps.isEmpty else { return }
+        selectionIndex = max(0, min(apps.count - 1, selectionIndex + delta))
+    }
 }
 
 struct StartMenuView: View {
     @ObservedObject var model: StartMenuModel
-    let onLaunch: () -> Void
-    @State private var selected: AppCategory = .installed
-
-    private var isSearching: Bool {
-        !model.query.trimmingCharacters(in: .whitespaces).isEmpty
-    }
+    let onLaunch: (AppEntry) -> Void
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,14 +218,21 @@ struct StartMenuView: View {
                 .padding(.vertical, 6)
                 .background(Color.black.opacity(0.20))
 
-                // Right pane — apps in selected category (or search results).
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(currentApps) { app in
-                            appRow(app)
+                // Right pane — apps in selected category (or search results),
+                // ranked by frequency of use.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(model.currentApps.enumerated()), id: \.element.id) { idx, app in
+                                appRow(app, isSelected: idx == model.selectionIndex)
+                                    .id(app.id)
+                                    .onHover { if $0 { model.selectionIndex = idx } }
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .onChange(of: model.selectionIndex) { _ in scrollToSelection(proxy) }
+                    .onChange(of: model.selectedCategory) { _ in scrollToSelection(proxy) }
                 }
             }
 
@@ -146,6 +244,8 @@ struct StartMenuView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .foregroundColor(.white)
+                    .focused($searchFocused)
+                    .onSubmit { if let app = model.selectedApp { onLaunch(app) } }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(Color.black.opacity(0.30))
@@ -153,18 +253,22 @@ struct StartMenuView: View {
         .background(VisualEffectBackground())
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08)))
+        .onAppear { searchFocused = true }
     }
 
-    private var currentApps: [AppEntry] {
-        if isSearching { return model.filtered }
-        return model.byCategory[selected] ?? []
+    private func scrollToSelection(_ proxy: ScrollViewProxy) {
+        let apps = model.currentApps
+        guard apps.indices.contains(model.selectionIndex) else { return }
+        withAnimation(.easeOut(duration: 0.12)) {
+            proxy.scrollTo(apps[model.selectionIndex].id, anchor: .center)
+        }
     }
 
     @ViewBuilder
     private func categoryRow(cat: AppCategory, count: Int) -> some View {
-        let isActive = !isSearching && selected == cat
+        let isActive = !model.isSearching && model.selectedCategory == cat
         Button {
-            selected = cat
+            model.selectedCategory = cat
         } label: {
             HStack(spacing: 6) {
                 Text(cat.rawValue)
@@ -188,10 +292,9 @@ struct StartMenuView: View {
     }
 
     @ViewBuilder
-    private func appRow(_ app: AppEntry) -> some View {
+    private func appRow(_ app: AppEntry, isSelected: Bool) -> some View {
         Button {
-            NSWorkspace.shared.open(URL(fileURLWithPath: app.id))
-            onLaunch()
+            onLaunch(app)
         } label: {
             HStack(spacing: 8) {
                 Image(nsImage: app.icon)
@@ -203,6 +306,7 @@ struct StartMenuView: View {
                 Spacer(minLength: 4)
             }
             .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Color.accentColor.opacity(isSelected ? 0.35 : 0.0))
             .contentShape(Rectangle())
         }
         .buttonStyle(StartRowButtonStyle())
@@ -217,6 +321,7 @@ private struct StartRowButtonStyle: ButtonStyle {
 }
 
 enum AppScanner {
+    @MainActor
     static func scan() -> [AppEntry] {
         let userApps = (NSHomeDirectory() as NSString).appendingPathComponent("Applications")
         let sources: [(root: String, category: AppCategory, recursive: Bool)] = [
@@ -259,6 +364,13 @@ enum AppScanner {
                 }
             }
         }
-        return entries.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        // Rank by frequency of use (desc), then alphabetically for ties and for
+        // never-used apps. Grouping into categories preserves this order.
+        return entries.sorted { a, b in
+            let ca = AppUsageStore.shared.count(forPath: a.id)
+            let cb = AppUsageStore.shared.count(forPath: b.id)
+            if ca != cb { return ca > cb }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
     }
 }

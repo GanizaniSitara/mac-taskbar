@@ -25,12 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for name: NSNotification.Name in [
             NSWorkspace.didLaunchApplicationNotification,
             NSWorkspace.didTerminateApplicationNotification,
-            NSWorkspace.didActivateApplicationNotification,
             NSWorkspace.didHideApplicationNotification,
             NSWorkspace.didUnhideApplicationNotification,
         ] {
             ws.addObserver(self, selector: #selector(workspaceChanged), name: name, object: nil)
         }
+        // Activations also feed the Start menu's frequency-of-use ranking.
+        ws.addObserver(self, selector: #selector(appActivated(_:)),
+                       name: NSWorkspace.didActivateApplicationNotification, object: nil)
 
         HotkeyMonitor.shared.start()
         model.refresh()
@@ -51,6 +53,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.model.refresh()
         }
+    }
+
+    @objc private func appActivated(_ note: Notification) {
+        if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+           let path = app.bundleURL?.path {
+            Task { @MainActor in AppUsageStore.shared.record(path: path) }
+        }
+        workspaceChanged()
     }
 
     @objc private func screenChanged() { positionPanel() }

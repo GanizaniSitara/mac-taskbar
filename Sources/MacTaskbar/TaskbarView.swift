@@ -51,6 +51,12 @@ private struct StartButton: View {
                 )
         }
         .buttonStyle(.plain)
+        // SwiftUI .help() doesn't fire on our non-activating panel, so drive the
+        // shared tooltip controller on hover (same as the agent icons).
+        .onHover { h in
+            if h { TooltipController.shared.show(text: "Apps", near: NSEvent.mouseLocation) }
+            else { TooltipController.shared.hide() }
+        }
     }
 }
 
@@ -74,10 +80,17 @@ private struct DockToggleButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(dock.suppressed
-              ? "Dock suppressed (won't pop up) — click to allow it"
-              : "Dock can pop up from the bottom — click to suppress")
+        .onHover { h in
+            hover = h
+            if h {
+                let text = dock.suppressed
+                    ? "Dock suppressed (won't pop up) — click to allow it"
+                    : "Dock can pop up from the bottom — click to suppress"
+                TooltipController.shared.show(text: text, near: NSEvent.mouseLocation)
+            } else {
+                TooltipController.shared.hide()
+            }
+        }
     }
 }
 
