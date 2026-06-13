@@ -86,12 +86,20 @@ final class StartMenuController {
         // Consume navigation keys; let everything else (typing) reach the
         // focused search field. Codes: 125 down, 126 up, 36/76 return, 53 esc.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard self != nil else { return event }
-            switch Int(event.keyCode) {
-            case 125, 126, 36, 76, 53:
-                let code = Int(event.keyCode)
-                Task { @MainActor in self?.handleNavKey(code) }
+            guard let self else { return event }
+            let code = Int(event.keyCode)
+            switch code {
+            case 125, 126, 36, 76, 53:       // up / down / enter / escape
+                Task { @MainActor in self.handleNavKey(code) }
                 return nil
+            case 123, 124:                   // left / right
+                // Only hijack for pane switching when not typing a search, so
+                // they still move the cursor inside the search field.
+                if self.model?.searching == false {
+                    Task { @MainActor in self.handleNavKey(code) }
+                    return nil
+                }
+                return event
             default:
                 return event
             }
@@ -100,11 +108,16 @@ final class StartMenuController {
 
     private func handleNavKey(_ code: Int) {
         guard let model else { return }
+        let inCategories = model.focusedPane == .categories && !model.searching
         switch code {
-        case 125: model.moveSelection(1)
-        case 126: model.moveSelection(-1)
-        case 36, 76: if let app = model.selectedApp { launch(app) }
-        case 53: hideAndRestore()
+        case 125: inCategories ? model.moveCategory(1) : model.moveSelection(1)    // down
+        case 126: inCategories ? model.moveCategory(-1) : model.moveSelection(-1)  // up
+        case 123: if !model.searching { model.focusedPane = .categories }          // left → category rail
+        case 124: model.focusedPane = .apps                                        // right → apps
+        case 36, 76:                                                               // return / enter
+            if inCategories { model.focusedPane = .apps }
+            else if let app = model.selectedApp { launch(app) }
+        case 53: hideAndRestore()                                                  // escape
         default: break
         }
     }
@@ -150,11 +163,22 @@ final class StartMenuController {
     }
 }
 
+/// Which pane keyboard navigation is currently driving.
+enum StartPane { case apps, categories }
+
 @MainActor
 final class StartMenuModel: ObservableObject {
-    @Published var query: String = "" { didSet { selectionIndex = 0 } }
+    @Published var query: String = "" {
+        didSet {
+            selectionIndex = 0
+            searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+            focusedPane = .apps
+        }
+    }
     @Published var selectedCategory: AppCategory = .installed { didSet { selectionIndex = 0 } }
     @Published var selectionIndex: Int = 0
+    @Published private(set) var searching: Bool = false
+    @Published var focusedPane: StartPane = .apps
 
     let allApps: [AppEntry]
     let byCategory: [AppCategory: [AppEntry]]
@@ -169,9 +193,7 @@ final class StartMenuModel: ObservableObject {
         }
     }
 
-    var isSearching: Bool {
-        !query.trimmingCharacters(in: .whitespaces).isEmpty
-    }
+    var isSearching: Bool { searching }
 
     var filtered: [AppEntry] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -193,6 +215,18 @@ final class StartMenuModel: ObservableObject {
         let apps = currentApps
         guard !apps.isEmpty else { return }
         selectionIndex = max(0, min(apps.count - 1, selectionIndex + delta))
+    }
+
+    /// Non-empty categories in display order — what arrow nav walks through.
+    var visibleCategories: [AppCategory] {
+        AppCategory.allCases.filter { !(byCategory[$0]?.isEmpty ?? true) }
+    }
+
+    func moveCategory(_ delta: Int) {
+        let cats = visibleCategories
+        guard !cats.isEmpty else { return }
+        let idx = cats.firstIndex(of: selectedCategory) ?? 0
+        selectedCategory = cats[max(0, min(cats.count - 1, idx + delta))]
     }
 }
 
@@ -226,6 +260,7 @@ struct StartMenuView: View {
                             ForEach(Array(model.currentApps.enumerated()), id: \.element.id) { idx, app in
                                 AppRow(app: app,
                                        isSelected: idx == model.selectionIndex,
+                                       selectionFocused: model.focusedPane == .apps,
                                        onLaunch: onLaunch)
                                     .id(app.id)
                             }
@@ -271,8 +306,10 @@ struct StartMenuView: View {
     @ViewBuilder
     private func categoryRow(cat: AppCategory, count: Int) -> some View {
         let isActive = !model.isSearching && model.selectedCategory == cat
+        let isFocused = isActive && model.focusedPane == .categories
         Button {
             model.selectedCategory = cat
+            model.focusedPane = .categories
         } label: {
             HStack(spacing: 6) {
                 Text(cat.rawValue)
@@ -288,7 +325,9 @@ struct StartMenuView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(
-                Rectangle().fill(Color.white.opacity(isActive ? 0.14 : 0.0))
+                Rectangle().fill(isFocused
+                    ? Color.accentColor.opacity(0.35)
+                    : Color.white.opacity(isActive ? 0.14 : 0.0))
             )
             .contentShape(Rectangle())
         }
@@ -300,6 +339,7 @@ struct StartMenuView: View {
 private struct AppRow: View {
     let app: AppEntry
     let isSelected: Bool
+    let selectionFocused: Bool
     let onLaunch: (AppEntry) -> Void
     @State private var hover = false
 
@@ -327,7 +367,9 @@ private struct AppRow: View {
     }
 
     private var rowBackground: Color {
-        if isSelected { return Color.accentColor.opacity(0.35) }
+        // Dimmer accent when focus has moved to the category rail, so it's clear
+        // which pane the arrows are driving.
+        if isSelected { return Color.accentColor.opacity(selectionFocused ? 0.35 : 0.16) }
         if hover { return Color.white.opacity(0.10) }
         return .clear
     }
