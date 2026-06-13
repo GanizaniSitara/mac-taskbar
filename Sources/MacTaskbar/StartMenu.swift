@@ -224,9 +224,10 @@ struct StartMenuView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(model.currentApps.enumerated()), id: \.element.id) { idx, app in
-                                appRow(app, isSelected: idx == model.selectionIndex)
+                                AppRow(app: app,
+                                       isSelected: idx == model.selectionIndex,
+                                       onLaunch: onLaunch)
                                     .id(app.id)
-                                    .onHover { if $0 { model.selectionIndex = idx } }
                             }
                         }
                         .padding(.vertical, 4)
@@ -259,8 +260,11 @@ struct StartMenuView: View {
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
         let apps = model.currentApps
         guard apps.indices.contains(model.selectionIndex) else { return }
+        // No anchor → scroll the minimal amount to reveal the row, so arrow nav
+        // only moves the list when the selection reaches an edge (not a jump to
+        // centre on every keypress).
         withAnimation(.easeOut(duration: 0.12)) {
-            proxy.scrollTo(apps[model.selectionIndex].id, anchor: .center)
+            proxy.scrollTo(apps[model.selectionIndex].id)
         }
     }
 
@@ -291,8 +295,15 @@ struct StartMenuView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func appRow(_ app: AppEntry, isSelected: Bool) -> some View {
+}
+
+private struct AppRow: View {
+    let app: AppEntry
+    let isSelected: Bool
+    let onLaunch: (AppEntry) -> Void
+    @State private var hover = false
+
+    var body: some View {
         Button {
             onLaunch(app)
         } label: {
@@ -306,17 +317,19 @@ struct StartMenuView: View {
                 Spacer(minLength: 4)
             }
             .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(Color.accentColor.opacity(isSelected ? 0.35 : 0.0))
+            .background(rowBackground)
             .contentShape(Rectangle())
         }
-        .buttonStyle(StartRowButtonStyle())
+        .buttonStyle(.plain)
+        // Visual hover highlight ONLY — must not touch the keyboard selection or
+        // scroll, or hovering re-enters the scroll-to-selection feedback loop.
+        .onHover { hover = $0 }
     }
-}
 
-private struct StartRowButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(Color.white.opacity(configuration.isPressed ? 0.20 : 0.0))
+    private var rowBackground: Color {
+        if isSelected { return Color.accentColor.opacity(0.35) }
+        if hover { return Color.white.opacity(0.10) }
+        return .clear
     }
 }
 
