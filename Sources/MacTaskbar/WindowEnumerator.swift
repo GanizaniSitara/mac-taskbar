@@ -55,21 +55,27 @@ enum WindowEnumerator {
                     if AXUIElementCopyAttributeValue(win, kAXRoleAttribute as CFString, &roleVal) == .success,
                        let role = roleVal as? String, role != kAXWindowRole as String { continue }
 
+                    var minVal: CFTypeRef?
+                    AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minVal)
+                    let minimized = (minVal as? Bool) ?? false
+
                     // Subrole — only show "standard" user-facing windows. Dialogs,
                     // floating palettes, system overlays, etc. have other subroles
                     // and shouldn't get a taskbar tile.
-                    var subroleVal: CFTypeRef?
-                    AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleVal)
-                    if let sub = subroleVal as? String,
-                       sub != (kAXStandardWindowSubrole as String) { continue }
+                    // EXCEPTION: a minimized window often reports a non-standard
+                    // subrole (e.g. Terminal flips AXStandardWindow -> AXDialog
+                    // while minimized). Don't subrole-filter minimized windows or
+                    // they vanish from the bar and can't be restored.
+                    if !minimized {
+                        var subroleVal: CFTypeRef?
+                        AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleVal)
+                        if let sub = subroleVal as? String,
+                           sub != (kAXStandardWindowSubrole as String) { continue }
+                    }
 
                     var titleVal: CFTypeRef?
                     AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleVal)
                     let title = (titleVal as? String) ?? ""
-
-                    var minVal: CFTypeRef?
-                    AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minVal)
-                    let minimized = (minVal as? Bool) ?? false
 
                     // Tiny / zero-size windows are almost always background
                     // helpers — UNLESS they're minimized (Dock collapses them
