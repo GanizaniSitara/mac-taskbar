@@ -6,8 +6,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = TaskbarModel()
     private var refreshTimer: Timer?
     private var tick = 0
+    private var activityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Opt this background accessory agent out of App Nap, otherwise macOS
+        // throttles/suspends our main-thread timers when the app looks idle and
+        // the clock/CPU widgets freeze at their last tick until it wakes.
+        // Use the idle-sleep-allowing variant: a menu-bar clock must never keep
+        // the Mac awake. Held for the app's lifetime.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Menu-bar taskbar clock and widgets must keep updating"
+        )
+
         AXBridge.ensurePermissionPrompt()
 
         panel = TaskbarPanel()
