@@ -46,7 +46,7 @@ PLIST
 # Sign with a real identity so TCC (Accessibility, Screen Recording, …) keys
 # the grant on a stable designated requirement instead of an ad-hoc cdhash
 # that changes every rebuild. Override with SIGN_IDENTITY=... if needed.
-SIGN_IDENTITY="${SIGN_IDENTITY:-60F9A7B1897CBEE3F5CEC33F5A1CB964F1DC2BF6}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-1A986CC737C6F9A31D1492F60A986C7A67AAF3A3}"
 codesign --force --deep --options runtime \
     --identifier "$BUNDLE_ID" \
     --sign "$SIGN_IDENTITY" \
