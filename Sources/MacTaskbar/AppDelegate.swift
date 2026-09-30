@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.model.refresh()
+            self.updateFullScreenVisibility()
             // Re-read the macOS Dock auto-hide state every ~5s so the toggle
             // reflects changes made elsewhere (e.g. System Settings).
             self.tick &+= 1
@@ -63,6 +64,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func workspaceChanged() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.model.refresh()
+            self?.updateFullScreenVisibility()
+        }
+    }
+
+    /// Step aside while the focused app is full screen (e.g. Citrix Viewer),
+    /// like the Windows taskbar does; come back as soon as focus moves on.
+    private func updateFullScreenVisibility() {
+        let fullScreen = frontWindowCoversScreen()
+        if fullScreen, panel.isVisible {
+            panel.orderOut(nil)
+        } else if !fullScreen, !panel.isVisible {
+            panel.orderFrontRegardless()
+        }
+    }
+
+    /// True when a visible normal window of the frontmost app covers the whole
+    /// screen, menu bar included. Catches native full-screen Spaces and apps
+    /// that go full screen with a borderless window; a merely zoomed window
+    /// stops below the menu bar, so it does not count.
+    private func frontWindowCoversScreen() -> Bool {
+        guard let screen = NSScreen.main,
+              let primary = NSScreen.screens.first,
+              let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                       kCGNullWindowID) as? [[String: Any]]
+        else { return false }
+        // CG window bounds are top-left based, measured from the primary screen.
+        let target = CGRect(x: screen.frame.minX,
+                            y: primary.frame.maxY - screen.frame.maxY,
+                            width: screen.frame.width,
+                            height: screen.frame.height)
+        // Any of the app's visible windows, not just the front one: Citrix
+        // Viewer floats a full-width 30pt toolbar strip in front of its
+        // full-screen session window.
+        return windows.contains { w in
+            guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let boundsDict = w[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict)
+            else { return false }
+            return bounds.contains(target)
         }
     }
 
