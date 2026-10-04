@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        name: NSWorkspace.didActivateApplicationNotification, object: nil)
 
         HotkeyMonitor.shared.start()
+        WindowSnapper.shared.start()
+
         model.refresh()
         // First Dock-state read, deferred off the initial render pass so the
         // synchronous Apple Event doesn't reenter the SwiftUI update.

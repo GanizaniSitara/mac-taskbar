@@ -153,7 +153,10 @@ final class StartMenuController {
 
         // Remember who had focus so Escape can return it, then become active so
         // the panel can be key and actually receive keystrokes.
-        previousApp = NSWorkspace.shared.frontmostApplication
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApp = front
+        }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         self.window = panel
